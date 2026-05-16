@@ -1,5 +1,4 @@
-@"
-aiofiles==23.2.1
+﻿aiofiles==23.2.1
 aiohappyeyeballs==2.6.1
 aiohttp==3.13.5
 aiohttp-retry==2.9.1
@@ -33,4 +32,5 @@ typing-inspection==0.4.2
 typing_extensions==4.15.0
 yarl==1.23.0
 yt-dlp==2026.3.17
-"@ | Set-Content -Encoding utf8 requirements.txt
+aiohttp==3.13.5
+aiohttp-retry==2.9.1
