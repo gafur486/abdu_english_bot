@@ -3,85 +3,80 @@ import base64
 import logging
 import yt_dlp
 import aiohttp
-import mutagen.id3 as id3
-from mutagen.mp3 import MP3
 import asyncio
 asyncio.set_event_loop(asyncio.new_event_loop())
+
 from pyrogram.client import Client as PyroClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
     CallbackQueryHandler, ContextTypes, filters
 )
-
 from dotenv import load_dotenv
 load_dotenv()
 
-TOKEN = os.getenv("BOT_TOKEN")
-API_ID = os.getenv("API_ID")
+# ─── Танзимот ─────────────────────────────────────────────────────────────────
+TOKEN    = os.getenv("BOT_TOKEN")
+API_ID   = os.getenv("API_ID")
 API_HASH = os.getenv("API_HASH")
 
-
-# Session файлро аз base64 месозем
 session_b64 = os.getenv("SESSION_B64")
 if session_b64:
-    with open("shazam_session.session", "wb") as f:
+    with open("user_session.session", "wb") as f:
         f.write(base64.b64decode(session_b64))
 
-SESSION = "shazam_session"
+SESSION   = "user_session"
+DOWNLOADS = "downloads"
+FFMPEG    = "/usr/bin"   # Render (Linux) — Windows path лозим нест
 
+os.makedirs(DOWNLOADS, exist_ok=True)
 logging.basicConfig(level=logging.INFO)
 
-DOWNLOADS = "downloads"
-os.makedirs(DOWNLOADS, exist_ok=True)
+# ─── Pyrogram ─────────────────────────────────────────────────────────────────
+pyro = PyroClient(SESSION, api_id=int(API_ID), api_hash=API_HASH)
 
-FFMPEG = "C:\\ffmpeg\\bin"
+# ─── Ёрдамчи функсияҳо ────────────────────────────────────────────────────────
+def detect_platform(url: str) -> str | None:
+    url = url.lower()
+    if "instagram.com" in url or "instagr.am" in url:
+        return "instagram"
+    if "youtube.com" in url or "youtu.be" in url:
+        return "youtube"
+    if "tiktok.com" in url or "vm.tiktok.com" in url:
+        return "tiktok"
+    return None
 
-user_store = {}
+PLATFORM_EMOJI = {
+    "instagram": "📸 Instagram",
+    "youtube":   "▶️ YouTube",
+    "tiktok":    "🎵 TikTok",
+}
 
-TIKTOK_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
     "Referer": "https://www.tiktok.com/",
 }
 
-# Pyrogram client (барои файлҳои калон)
-pyro = PyroClient(SESSION, api_id=int(API_ID), api_hash=API_HASH)
-
-
-# ─── Санҷиши силка ────────────────────────────────────────────────────────────
-def is_instagram(url: str) -> bool:
-    return "instagram.com" in url or "instagr.am" in url
-
-def is_youtube(url: str) -> bool:
-    return "youtube.com" in url or "youtu.be" in url
-
-def is_tiktok(url: str) -> bool:
-    return "tiktok.com" in url or "vm.tiktok.com" in url
-
-def is_supported(url: str) -> bool:
-    return is_instagram(url) or is_youtube(url) or is_tiktok(url)
-
-
 # ─── Скачати видео ────────────────────────────────────────────────────────────
 async def download_video(url: str, quality: str) -> str | None:
-    if quality == "low":
-        fmt = "worstvideo[ext=mp4]+worstaudio/worst[ext=mp4]/worst"
-    elif quality == "medium":
-        fmt = "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480]/best"
-    else:
-        fmt = "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best"
-
+    fmt_map = {
+        "low":    "worstvideo[ext=mp4]+worstaudio/worst[ext=mp4]/worst",
+        "medium": "bestvideo[height<=480][ext=mp4]+bestaudio/best[height<=480]/best",
+        "high":   "bestvideo[ext=mp4]+bestaudio/best[ext=mp4]/best",
+    }
     opts = {
-        "outtmpl": f"{DOWNLOADS}/%(id)s.%(ext)s",
-        "format": fmt,
-        "quiet": True,
-        "noplaylist": True,
-        "ffmpeg_location": FFMPEG,
-        "merge_output_format": "mp4",
+        "outtmpl":                      f"{DOWNLOADS}/%(id)s.%(ext)s",
+        "format":                       fmt_map.get(quality, fmt_map["high"]),
+        "quiet":                        True,
+        "noplaylist":                   True,
+        "ffmpeg_location":              FFMPEG,
+        "merge_output_format":          "mp4",
         "concurrent_fragment_downloads": 4,
-        "sleep_interval": 3,
-        "max_sleep_interval": 6,
-        "http_headers": TIKTOK_HEADERS if is_tiktok(url) else {},
+        "http_headers":                 HEADERS,
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -90,232 +85,279 @@ async def download_video(url: str, quality: str) -> str | None:
             if not os.path.exists(path):
                 base = os.path.splitext(path)[0]
                 for ext in ["mp4", "mkv", "webm"]:
-                    if os.path.exists(f"{base}.{ext}"):
-                        return f"{base}.{ext}"
+                    candidate = f"{base}.{ext}"
+                    if os.path.exists(candidate):
+                        return candidate
+                return None
             return path
     except Exception as e:
-        logging.error(f"Видео хато: {e}")
+        logging.error(f"[VIDEO] {e}")
         return None
 
-
-# ─── Скачати мусиқӣ ───────────────────────────────────────────────────────────
-async def download_audio(url: str) -> str | None:
+# ─── Скачати аудио ────────────────────────────────────────────────────────────
+async def download_audio(url: str) -> tuple[str | None, dict]:
+    """Аудиои воқеиро скачат мекунад ва маълумоти трекро бармегардонад."""
     opts = {
-        "outtmpl": f"{DOWNLOADS}/%(id)s.%(ext)s",
-        "format": "bestaudio/best",
-        "quiet": True,
-        "noplaylist": True,
-        "ffmpeg_location": FFMPEG,
-        "sleep_interval": 2,
-        "http_headers": TIKTOK_HEADERS if is_tiktok(url) else {},
+        "outtmpl":           f"{DOWNLOADS}/%(id)s.%(ext)s",
+        "format":            "bestaudio/best",
+        "quiet":             True,
+        "noplaylist":        True,
+        "ffmpeg_location":   FFMPEG,
+        "http_headers":      HEADERS,
         "postprocessors": [{
-            "key": "FFmpegExtractAudio",
-            "preferredcodec": "mp3",
-            "preferredquality": "192",
+            "key":              "FFmpegExtractAudio",
+            "preferredcodec":   "mp3",
+            "preferredquality": "320",
         }],
     }
+    meta = {}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
             base = os.path.splitext(ydl.prepare_filename(info))[0]
-            return base + ".mp3"
+            path = base + ".mp3"
+            meta = {
+                "title":    info.get("title", ""),
+                "uploader": info.get("uploader") or info.get("channel", ""),
+                "duration": info.get("duration", 0),
+                "platform": detect_platform(url),
+            }
+            return path, meta
     except Exception as e:
-        logging.error(f"Мусиқӣ хато: {e}")
-        return None
+        logging.error(f"[AUDIO] {e}")
+        return None, {}
 
-
-# ─── Shazam ───────────────────────────────────────────────────────────────────
-async def shazam_recognize(path: str) -> dict | None:
-    try:
-        shazam = Shazam()
-        out = await shazam.recognize(path)
-        if not out.get("matches"):
-            return None
-        track = out.get("track", {})
-        title = track.get("title", "Номаълум")
-        artist = track.get("subtitle", "Номаълум")
-        images = track.get("images", {})
-        cover_url = images.get("coverarthq") or images.get("coverart")
-        return {"title": title, "artist": artist, "cover_url": cover_url}
-    except Exception as e:
-        logging.error(f"Shazam хато: {e}")
-        return None
-
-
-# ─── Обложка ──────────────────────────────────────────────────────────────────
-async def add_cover_to_mp3(mp3_path: str, cover_url: str, title: str, artist: str):
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(cover_url) as resp:
-                cover_data = await resp.read()
-        audio = MP3(mp3_path, ID3=id3.ID3)
-        try:
-            audio.add_tags()
-        except Exception:
-            pass
-        audio.tags["TIT2"] = id3.TIT2(encoding=3, text=title)
-        audio.tags["TPE1"] = id3.TPE1(encoding=3, text=artist)
-        audio.tags["APIC:"] = id3.APIC(
-            encoding=3, mime="image/jpeg",
-            type=3, desc="Cover", data=cover_data,
-        )
-        audio.save()
-    except Exception as e:
-        logging.error(f"Обложка хато: {e}")
-
-
-# ─── Pyrogram бо файл фиристодан ─────────────────────────────────────────────
+# ─── Pyrogram — файлҳои калон ────────────────────────────────────────────────
 async def send_large_video(chat_id: int, path: str):
     async with pyro:
         await pyro.send_video(chat_id, path)
 
-async def send_large_audio(chat_id: int, path: str, title: str = None, performer: str = None, caption: str = None):
+async def send_large_audio(chat_id: int, path: str, title: str = "", performer: str = "", caption: str = ""):
     async with pyro:
         await pyro.send_audio(chat_id, path, title=title, performer=performer, caption=caption)
 
+# ─── Форматкунии вақт ─────────────────────────────────────────────────────────
+def fmt_duration(seconds: int) -> str:
+    if not seconds:
+        return ""
+    m, s = divmod(int(seconds), 60)
+    h, m = divmod(m, 60)
+    return f"{h}:{m:02}:{s:02}" if h else f"{m}:{s:02}"
 
-# ─── /start ───────────────────────────────────────────────────────────────────
+# ─── Захираи корбар ───────────────────────────────────────────────────────────
+user_store: dict = {}
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  ХАНДЛЕРҲО
+# ═══════════════════════════════════════════════════════════════════════════════
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "Салом! 👋\n\n"
-        "Силкаи Instagram, YouTube ё TikTok бифирист.\n\n"
-        "🎬 Видео → сифат интихоб мекунӣ\n"
-        "🎵 Мусиқӣ → MP3 + Shazam + обложка\n\n"
-        "📦 То 2GB файл қабул мекунам!"
+    text = (
+        "👋 *Хуш омадед!*\n\n"
+        "Ман метавонам видео ва мусиқӣ аз:\n"
+        "📸 *Instagram* • ▶️ *YouTube* • 🎵 *TikTok*\n\n"
+        "──────────────────────\n"
+        "📌 *Чӣ тавр истифода бурдан:*\n"
+        "1️⃣ Силкаро ирсол кунед\n"
+        "2️⃣ Видео ё мусиқиро интихоб кунед\n"
+        "3️⃣ Барои видео сифат интихоб кунед\n"
+        "4️⃣ Файлро қабул кунед ✅\n\n"
+        "📦 *То 2GB* файл дастгирӣ мешавад!\n"
+        "──────────────────────\n"
+        "❓ Ёрдам: /help"
     )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
-# ─── /help ────────────────────────────────────────────────────────────────────
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "ℹ️ Дастур:\n\n"
-        "1️⃣ Силкаи Instagram, YouTube ё TikTok бифирист\n"
-        "2️⃣ 🎬 Видео ё 🎵 Мусиқӣ интихоб кун\n"
-        "3️⃣ Барои видео сифат интихоб кун\n"
-        "4️⃣ Файлро қабул кун!\n\n"
-        "📦 То 2GB файл дастгирӣ мешавад."
+    text = (
+        "📖 *Дастур*\n\n"
+        "🔗 *Силкаҳои дастгирӣшаванда:*\n"
+        "• instagram.com / instagr.am\n"
+        "• youtube.com / youtu.be\n"
+        "• tiktok.com / vm.tiktok.com\n\n"
+        "🎬 *Видео:* 3 сифат — паст / миёна / баланд\n"
+        "🎵 *Мусиқӣ:* MP3 320kbps — аудиои воқеӣ\n\n"
+        "──────────────────────\n"
+        "⚠️ *Огоҳӣ:* Баъзе видеоҳои хусусӣ\n"
+        "скачат намешаванд.\n\n"
+        "🤖 Аз /start оғоз кунед"
     )
+    await update.message.reply_text(text, parse_mode="Markdown")
 
 
-# ─── Паём ─────────────────────────────────────────────────────────────────────
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text.strip()
-    if not is_supported(text):
-        await update.message.reply_text("⚠️ Лутфан силкаи Instagram, YouTube ё TikTok бифирист.")
+    url = update.message.text.strip()
+    platform = detect_platform(url)
+
+    if not platform:
+        await update.message.reply_text(
+            "⚠️ *Силка эътироф нашуд.*\n\n"
+            "Лутфан силкаи дурусти:\n"
+            "📸 Instagram • ▶️ YouTube • 🎵 TikTok\n"
+            "ирсол кунед.",
+            parse_mode="Markdown"
+        )
         return
 
-    user_id = update.message.from_user.id
-    user_store[user_id] = {"url": text, "chat_id": update.message.chat_id}
+    uid = update.message.from_user.id
+    user_store[uid] = {"url": url, "chat_id": update.message.chat_id, "platform": platform}
 
+    platform_label = PLATFORM_EMOJI[platform]
     keyboard = [[
         InlineKeyboardButton("🎬 Видео", callback_data="type_video"),
         InlineKeyboardButton("🎵 Мусиқӣ", callback_data="type_audio"),
     ]]
-    await update.message.reply_text("Чӣ мехоҳӣ?", reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(
+        f"✅ *{platform_label}* силка қабул шуд.\n\nЧӣ мехоҳед?",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode="Markdown"
+    )
 
 
-# ─── Callback ─────────────────────────────────────────────────────────────────
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    user_id = query.from_user.id
-    store = user_store.get(user_id)
+    uid   = query.from_user.id
+    store = user_store.get(uid)
 
     if not store:
-        await query.edit_message_text("⚠️ Силка ёфт нашуд. Дубора бифирист.")
+        await query.edit_message_text("⚠️ Силка ёфт нашуд. Лутфан дубора ирсол кунед.")
         return
 
-    data = query.data
-    chat_id = store.get("chat_id")
+    data     = query.data
+    url      = store["url"]
+    chat_id  = store["chat_id"]
+    platform = store.get("platform", "")
+    plabel   = PLATFORM_EMOJI.get(platform, "")
 
-    # ── Видео → сифат ─────────────────────────────────────────────────────────
+    # ── Видео → сифат ──────────────────────────────────────────────────────────
     if data == "type_video":
-        user_store[user_id]["type"] = "video"
+        user_store[uid]["type"] = "video"
         keyboard = [[
-            InlineKeyboardButton("🔻 Паст (360p)", callback_data="q_low"),
+            InlineKeyboardButton("🔻 Паст (360p)",  callback_data="q_low"),
             InlineKeyboardButton("🔶 Миёна (480p)", callback_data="q_medium"),
-            InlineKeyboardButton("🔺 Баланд (1080p)", callback_data="q_high"),
+            InlineKeyboardButton("🔺 Баланд (HD)",  callback_data="q_high"),
         ]]
-        await query.edit_message_text("Сифатро интихоб кун:", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(
+            f"🎬 *Видео* — {plabel}\n\nСифатро интихоб кунед:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown"
+        )
         return
 
-    # ── Мусиқӣ ────────────────────────────────────────────────────────────────
+    # ── Мусиқӣ ─────────────────────────────────────────────────────────────────
     if data == "type_audio":
-        url = store["url"]
-        await query.edit_message_text("⏳ Мусиқӣ скачат мешавад...")
-        path = await download_audio(url)
+        await query.edit_message_text(
+            f"⏳ *{plabel}* — мусиқӣ скачат мешавад...\n\n"
+            "🔄 Лутфан интизор шавед.",
+            parse_mode="Markdown"
+        )
+
+        path, meta = await download_audio(url)
 
         if not path or not os.path.exists(path):
-            await query.edit_message_text("❌ Мусиқӣ скачат нашуд.")
-            user_store.pop(user_id, None)
+            await query.edit_message_text(
+                "❌ *Мусиқӣ скачат нашуд.*\n\n"
+                "Сабабҳои эҳтимолӣ:\n"
+                "• Видео хусусӣ аст\n"
+                "• Силка нодуруст аст\n\n"
+                "Силкаро санҷед ва дубора кӯшиш кунед.",
+                parse_mode="Markdown"
+            )
+            user_store.pop(uid, None)
             return
 
-        await query.edit_message_text("🎵 Shazam мешиносад...")
-        info = await shazam_recognize(path)
+        title     = meta.get("title", "")
+        performer = meta.get("uploader", "")
+        duration  = fmt_duration(meta.get("duration", 0))
+        size_mb   = os.path.getsize(path) / (1024 * 1024)
 
-        caption = ""
-        title = None
-        performer = None
-        if info:
-            title = info["title"]
-            performer = info["artist"]
-            caption = f"🎵 {title}\n👤 {performer}"
-            if info.get("cover_url"):
-                await add_cover_to_mp3(path, info["cover_url"], title, performer)
+        caption = f"🎵 *{title}*"
+        if performer:
+            caption += f"\n👤 {performer}"
+        if duration:
+            caption += f"\n⏱ {duration}"
+        caption += f"\n\n📦 {size_mb:.1f} MB"
 
-        size = os.path.getsize(path)
-        await query.edit_message_text("📤 Мефиристам...")
+        await query.edit_message_text("📤 *Ирсол мешавад...*", parse_mode="Markdown")
 
-        if size > 50 * 1024 * 1024:
-            # Pyrogram бо файлҳои калон
-            await send_large_audio(chat_id, path, title=title, performer=performer, caption=caption)
-        else:
-            with open(path, "rb") as f:
-                await query.message.reply_audio(
-                    audio=f,
-                    caption=caption if caption else None,
-                    title=title,
-                    performer=performer,
-                )
-        await query.delete_message()
-        os.remove(path)
-        user_store.pop(user_id, None)
+        try:
+            if size_mb > 50:
+                await send_large_audio(chat_id, path, title=title, performer=performer, caption=caption)
+            else:
+                with open(path, "rb") as f:
+                    await query.message.reply_audio(
+                        audio=f,
+                        caption=caption,
+                        title=title,
+                        performer=performer,
+                        parse_mode="Markdown"
+                    )
+            await query.delete_message()
+        except Exception as e:
+            logging.error(f"[SEND AUDIO] {e}")
+            await query.edit_message_text("❌ Ирсол нашуд. Дубора кӯшиш кунед.")
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+            user_store.pop(uid, None)
         return
 
-    # ── Сифат → скачат ────────────────────────────────────────────────────────
+    # ── Сифат → скачати видео ──────────────────────────────────────────────────
     if data.startswith("q_"):
         quality = data.replace("q_", "")
-        url = store.get("url")
-        quality_text = {"low": "паст 🔻", "medium": "миёна 🔶", "high": "баланд 🔺"}.get(quality, "")
-        await query.edit_message_text(f"⏳ Видео ({quality_text}) скачат мешавад...")
+        q_label = {"low": "паст 🔻", "medium": "миёна 🔶", "high": "баланд 🔺"}.get(quality, "")
+
+        await query.edit_message_text(
+            f"⏳ *{plabel}* — видео ({q_label}) скачат мешавад...\n\n"
+            "🔄 Лутфан интизор шавед.",
+            parse_mode="Markdown"
+        )
 
         path = await download_video(url, quality)
 
-        if path and os.path.exists(path):
-            size = os.path.getsize(path)
-            await query.edit_message_text("📤 Мефиристам...")
+        if not path or not os.path.exists(path):
+            await query.edit_message_text(
+                "❌ *Видео скачат нашуд.*\n\n"
+                "Сабабҳои эҳтимолӣ:\n"
+                "• Видео хусусӣ аст\n"
+                "• Ин сифат дастрас нест\n"
+                "• Силка нодуруст аст\n\n"
+                "Силкаро санҷед ё сифати дигар интихоб кунед.",
+                parse_mode="Markdown"
+            )
+            user_store.pop(uid, None)
+            return
 
-            if size > 50 * 1024 * 1024:
-                # Pyrogram бо файлҳои калон
+        size_mb = os.path.getsize(path) / (1024 * 1024)
+        await query.edit_message_text(
+            f"📤 *Ирсол мешавад...*\n📦 {size_mb:.1f} MB",
+            parse_mode="Markdown"
+        )
+
+        try:
+            if size_mb > 50:
                 await send_large_video(chat_id, path)
             else:
                 with open(path, "rb") as f:
                     await query.message.reply_video(video=f)
-
             await query.delete_message()
-            os.remove(path)
-        else:
-            await query.edit_message_text("❌ Скачат нашуд. Силкаро санҷ.")
+        except Exception as e:
+            logging.error(f"[SEND VIDEO] {e}")
+            await query.edit_message_text("❌ Ирсол нашуд. Дубора кӯшиш кунед.")
+        finally:
+            if os.path.exists(path):
+                os.remove(path)
+            user_store.pop(uid, None)
 
-        user_store.pop(user_id, None)
 
-
-# ─── Асосӣ ───────────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
+    app.add_handler(CommandHandler("help",  help_cmd))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
     print("✅ Бот кор мекунад — то 2GB дастгирӣ!")
