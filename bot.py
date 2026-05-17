@@ -1,13 +1,22 @@
 import os
+import sys
 import base64
 import logging
+import warnings
 import yt_dlp
 import aiohttp
 import asyncio
+
+warnings.filterwarnings("ignore", message=r".*TgCrypto is missing.*", category=UserWarning)
+logging.basicConfig(level=logging.WARNING)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("telegram").setLevel(logging.WARNING)
+logging.getLogger("pyrogram.crypto.aes").setLevel(logging.ERROR)
 asyncio.set_event_loop(asyncio.new_event_loop())
 
 from pyrogram.client import Client as PyroClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import Conflict
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
     CallbackQueryHandler, ContextTypes, filters
@@ -25,9 +34,9 @@ if session_b64:
     with open("user_session.session", "wb") as f:
         f.write(base64.b64decode(session_b64))
 
-SESSION   = "user_session"
+SESSION   = os.getenv("SESSION") or "user_session"
 DOWNLOADS = "downloads"
-FFMPEG    = "/usr/bin"   # Render (Linux)
+FFMPEG    = os.getenv("FFMPEG_PATH") or ("/usr/bin" if not sys.platform.startswith("win") else None)
 COOKIES   = "cookies.txt" if os.path.exists("cookies.txt") else None
 
 os.makedirs(DOWNLOADS, exist_ok=True)
@@ -74,11 +83,12 @@ async def download_video(url: str, quality: str) -> str | None:
         "format":                       fmt_map.get(quality, fmt_map["high"]),
         "quiet":                        True,
         "noplaylist":                   True,
-        "ffmpeg_location":              FFMPEG,
         "merge_output_format":          "mp4",
         "concurrent_fragment_downloads": 4,
         "http_headers":                 HEADERS,
     }
+    if FFMPEG:
+        opts["ffmpeg_location"] = FFMPEG
     if COOKIES:
         opts["cookiefile"] = COOKIES
     try:
@@ -105,20 +115,23 @@ async def download_audio(url: str) -> tuple[str | None, dict]:
         "format":            "bestaudio/best",
         "quiet":             True,
         "noplaylist":        True,
-        "ffmpeg_location":   FFMPEG,
+        "merge_output_format": "mp4",
         "http_headers":      HEADERS,
-        "postprocessors": [{
-            "key":              "FFmpegExtractAudio",
-            "preferredcodec":   "mp3",
-            "preferredquality": "320",
-        }],
     }
+    if FFMPEG:
+        opts["ffmpeg_location"] = FFMPEG
     meta = {}
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
-            base = os.path.splitext(ydl.prepare_filename(info))[0]
-            path = base + ".mp3"
+            path = ydl.prepare_filename(info)
+            if not os.path.exists(path):
+                base = os.path.splitext(path)[0]
+                for ext in ["mp4", "m4a", "webm", "opus", "aac", "ogg", "mp3"]:
+                    candidate = f"{base}.{ext}"
+                    if os.path.exists(candidate):
+                        path = candidate
+                        break
             meta = {
                 "title":    info.get("title", ""),
                 "uploader": info.get("uploader") or info.get("channel", ""),
@@ -180,7 +193,7 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• youtube.com / youtu.be\n"
         "• tiktok.com / vm.tiktok.com\n\n"
         "🎬 *Видео:* 3 сифат — паст / миёна / баланд\n"
-        "🎵 *Мусиқӣ:* MP3 320kbps — аудиои воқеӣ\n\n"
+        "🎵 *Мусиқӣ:* MP4 (аудио ҳамчун видео)\n\n"
         "──────────────────────\n"
         "⚠️ *Огоҳӣ:* Баъзе видеоҳои хусусӣ\n"
         "скачат намешаванд.\n\n"
@@ -253,7 +266,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ── Мусиқӣ ─────────────────────────────────────────────────────────────────
     if data == "type_audio":
         await query.edit_message_text(
-            f"⏳ *{plabel}* — мусиқӣ скачат мешавад...\n\n"
+            f"⏳ *{plabel}* — мусиқӣ (видео) скачат мешавад...\n\n"
             "🔄 Лутфан интизор шавед.",
             parse_mode="Markdown"
         )
@@ -288,19 +301,17 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
             if size_mb > 50:
-                await send_large_audio(chat_id, path, title=title, performer=performer, caption=caption)
+                await send_large_video(chat_id, path)
             else:
                 with open(path, "rb") as f:
-                    await query.message.reply_audio(
-                        audio=f,
+                    await query.message.reply_video(
+                        video=f,
                         caption=caption,
-                        title=title,
-                        performer=performer,
                         parse_mode="Markdown"
                     )
             await query.delete_message()
         except Exception as e:
-            logging.error(f"[SEND AUDIO] {e}")
+            logging.error(f"[SEND AUDIO AS VIDEO] {e}")
             await query.edit_message_text("❌ Ирсол нашуд. Дубора кӯшиш кунед.")
         finally:
             if os.path.exists(path):
@@ -364,7 +375,12 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(CallbackQueryHandler(handle_callback))
     print("✅ Бот кор мекунад — то 2GB дастгирӣ!")
-    app.run_polling()
+    try:
+        app.run_polling()
+    except Conflict:
+        logging.error("Conflict: another bot instance is already running. Stop the other process or webhook before starting this bot.")
+    except Exception as e:
+        logging.error("Bot stopped due to error: %s", e)
 
 
 if __name__ == "__main__":
