@@ -2,7 +2,7 @@ services:
   - type: worker
     name: abdu_english_bot
     runtime: python
-    buildCommand: pip install -r requirements.txt
+    buildCommand: apt-get install -y ffmpeg && pip install -r requirements.txt
     startCommand: python bot.py
     envVars:
       - key: PYTHON_VERSION
