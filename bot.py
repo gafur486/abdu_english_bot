@@ -5,6 +5,8 @@ import yt_dlp
 import aiohttp
 import mutagen.id3 as id3
 from mutagen.mp3 import MP3
+import asyncio
+asyncio.set_event_loop(asyncio.new_event_loop())
 from pyrogram.client import Client as PyroClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
