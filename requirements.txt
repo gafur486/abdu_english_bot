@@ -1,6 +1,6 @@
 ﻿python-telegram-bot==21.3
 python-dotenv==1.2.2
-yt-dlp==2026.3.17
+yt-dlp
 Pyrogram==2.0.106
 PySocks==1.7.1
 httpx==0.27.0
