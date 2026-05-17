@@ -27,7 +27,8 @@ if session_b64:
 
 SESSION   = "user_session"
 DOWNLOADS = "downloads"
-FFMPEG    = "/usr/bin"   # Render (Linux) — Windows path лозим нест
+FFMPEG    = "/usr/bin"   # Render (Linux)
+COOKIES   = "cookies.txt" if os.path.exists("cookies.txt") else None
 
 os.makedirs(DOWNLOADS, exist_ok=True)
 logging.basicConfig(level=logging.INFO)
@@ -78,6 +79,8 @@ async def download_video(url: str, quality: str) -> str | None:
         "concurrent_fragment_downloads": 4,
         "http_headers":                 HEADERS,
     }
+    if COOKIES:
+        opts["cookiefile"] = COOKIES
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=True)
