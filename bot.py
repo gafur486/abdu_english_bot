@@ -1,21 +1,33 @@
 import os
+import base64
 import logging
 import yt_dlp
 import aiohttp
 import mutagen.id3 as id3
 from mutagen.mp3 import MP3
 from shazamio import Shazam
-from pyrogram import Client as PyroClient
+from pyrogram.client import Client as PyroClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder, MessageHandler, CommandHandler,
     CallbackQueryHandler, ContextTypes, filters
 )
 
-TOKEN = "..."
-API_ID = ...
-API_HASH = "..."
-SESSION = "..."
+from dotenv import load_dotenv
+load_dotenv()
+
+TOKEN = os.getenv("BOT_TOKEN")
+API_ID = os.getenv("API_ID")
+API_HASH = os.getenv("API_HASH")
+
+
+# Session файлро аз base64 месозем
+session_b64 = os.getenv("SESSION_B64")
+if session_b64:
+    with open("shazam_session.session", "wb") as f:
+        f.write(base64.b64decode(session_b64))
+
+SESSION = "shazam_session"
 
 logging.basicConfig(level=logging.INFO)
 
@@ -32,7 +44,7 @@ TIKTOK_HEADERS = {
 }
 
 # Pyrogram client (барои файлҳои калон)
-pyro = PyroClient(SESSION, api_id=API_ID, api_hash=API_HASH)
+pyro = PyroClient(SESSION, api_id=int(API_ID), api_hash=API_HASH)
 
 
 # ─── Санҷиши силка ────────────────────────────────────────────────────────────
